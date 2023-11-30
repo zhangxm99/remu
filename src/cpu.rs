@@ -1,11 +1,18 @@
 use crate::bus::Bus;
 use crate::exceptions::*;
 use crate::param::*;
+use crate::csr::*;
+
+pub const MACHINE:u32 = 3;
+pub const SUPERVISOR:u32 = 1;
+pub const USER:u32 = 0;
 
 pub struct Cpu{
     pc: u32,
     regs: [u32;32],
-    bus: Bus
+    bus: Bus,
+    csr: Csr,
+    mode: u32
 }
 
 impl Cpu{
@@ -15,7 +22,9 @@ impl Cpu{
         Self{
             pc:DRAM_BASE,
             regs,
-            bus:Bus::new()
+            bus:Bus::new(),
+            csr:Csr::new(),
+            mode:MACHINE
         }
     }
     pub fn reset(&mut self){
@@ -100,6 +109,16 @@ impl Cpu{
                     }
                     _ => Err(Exception::IllegalInstruction(inst)),
                     
+                }
+            }
+            0x0f => {
+                // A fence instruction does nothing because this emulator executes an
+                // instruction sequentially on a single thread.
+                match funct3 {
+                    0x0 => { // fence
+                        return self.update_pc();
+                    }
+                    _ => Err(Exception::IllegalInstruction(inst)),
                 }
             }
             0x13 => {
@@ -191,7 +210,7 @@ impl Cpu{
                             0x20 => {
                                 // sraiw
                                 self.regs[rd] =
-                                    (self.regs[rs1] as i32).wrapping_shr(shamt) as i64 as u32;
+                                    (self.regs[rs1] as i32).wrapping_shr(shamt) as i32 as u32;
                                 return self.update_pc();
                             }
                             _ => Err(Exception::IllegalInstruction(inst)),
@@ -210,6 +229,86 @@ impl Cpu{
                     0x1 => {self.store(addr, 16, self.regs[rs2])?; self.update_pc()}, // sh
                     0x2 => {self.store(addr, 32, self.regs[rs2])?; self.update_pc()}, // sw
                     _ => unreachable!(),
+                }
+            }
+            0x2f => {
+                let funtc5 = (funct7 & 0b1111100) >> 2;
+                let _aq = (funct7 & 0b0000010) >> 1; // acquire access
+                let _rl = funct7 & 0b0000001; // release access
+                match funtc5{
+                    0x00 => {
+                        //AMOADD.W 
+                        let t = self.load(self.regs[rs1],32)?;
+                        self.store(self.regs[rs1],32,t.wrapping_add(self.regs[rs2]));
+                        self.regs[rd] = t;
+                        return self.update_pc();
+                    }
+                    0x01 => {
+                        //AMOSWAP.w
+                        let t = self.load(self.regs[rs1],32)?;
+                        self.store(self.regs[rs1],32,self.regs[rs2]);
+                        self.regs[rs2] = t;
+                        self.regs[rd] = t;
+                        return self.update_pc();
+                    }
+                    0x04 => {
+                        //AMOXOR.W
+                        let t = self.load(self.regs[rs1],32)?;
+                        self.store(self.regs[rs1],32,t ^ self.regs[rs2]);
+                        self.regs[rd] = t;
+                        return self.update_pc();
+                    }
+                    0x08 => {
+                        //AMOOR.W
+                        let t = self.load(self.regs[rs1],32)?;
+                        self.store(self.regs[rs1],32,t | self.regs[rs2]);
+                        self.regs[rd] = t;
+                        return self.update_pc();
+                    }
+                    0x0c => {
+                        //AMOAND.W
+                        let t = self.load(self.regs[rs1],32)?;
+                        self.store(self.regs[rs1],32,t & self.regs[rs2]);
+                        self.regs[rd] = t;
+                        return self.update_pc();
+                    }
+                    0x10 => {
+                        //AMOMIN.w
+                        let t = self.load(self.regs[rs1],32)?;
+                        if (self.regs[rs2] as i32) < (t as i32) {
+                            self.store(self.regs[rs1],32,self.regs[rs2]);
+                        }
+                        self.regs[rd] = t;
+                        return self.update_pc();
+                    }
+                    0x14 => {
+                        //AMOMAX.w
+                        let t = self.load(self.regs[rs1],32)?;
+                        if (self.regs[rs2] as i32) > (t as i32) {
+                            self.store(self.regs[rs1],32,self.regs[rs2]);
+                        }
+                        self.regs[rd] = t;
+                        return self.update_pc();
+                    }
+                    0x18 => {
+                        //AMOMINU.w
+                        let t = self.load(self.regs[rs1],32)?;
+                        if self.regs[rs2] < t {
+                            self.store(self.regs[rs1],32,self.regs[rs2]);
+                        }
+                        self.regs[rd] = t;
+                        return self.update_pc();
+                    }
+                    0x1c => {
+                        //AMOMAXU.w
+                        let t = self.load(self.regs[rs1],32)?;
+                        if self.regs[rs2] > t {
+                            self.store(self.regs[rs1],32,self.regs[rs2]);
+                        }
+                        self.regs[rd] = t;
+                        return self.update_pc();
+                    }
+                    _ => Err(Exception::IllegalInstruction(inst))
                 }
             }
             0x33 => {
@@ -240,7 +339,7 @@ impl Cpu{
                     }
                     (0x2, 0x00) => {
                         // slt
-                        self.regs[rd] = if (self.regs[rs1] as i64) < (self.regs[rs2] as i64) { 1 } else { 0 };
+                        self.regs[rd] = if (self.regs[rs1] as i32) < (self.regs[rs2] as i32) { 1 } else { 0 };
                         return self.update_pc();
                     }
                     (0x3, 0x00) => {
@@ -278,42 +377,8 @@ impl Cpu{
             }
             0x37 => {
                 // lui
-                self.regs[rd] = (inst & 0xfffff000) as i32 as i64 as u32;
+                self.regs[rd] = (inst & 0xfffff000) as i32 as u32;
                 return self.update_pc();
-            }
-            0x3b => {
-                // "The shift amount is given by rs2[4:0]."
-                let shamt = (self.regs[rs2] & 0x1f) as u32;
-                match (funct3, funct7) {
-                    (0x0, 0x00) => {
-                        // addw
-                        self.regs[rd] =
-                            self.regs[rs1].wrapping_add(self.regs[rs2]) as i32 as i64 as u32;
-                        return self.update_pc();
-                    }
-                    (0x0, 0x20) => {
-                        // subw
-                        self.regs[rd] =
-                            ((self.regs[rs1].wrapping_sub(self.regs[rs2])) as i32) as u32;
-                        return self.update_pc();
-                    }
-                    (0x1, 0x00) => {
-                        // sllw
-                        self.regs[rd] = (self.regs[rs1] as u32).wrapping_shl(shamt) as i32 as u32;
-                        return self.update_pc();
-                    }
-                    (0x5, 0x00) => {
-                        // srlw
-                        self.regs[rd] = (self.regs[rs1] as u32).wrapping_shr(shamt) as i32 as u32;
-                        return self.update_pc();
-                    }
-                    (0x5, 0x20) => {
-                        // sraw
-                        self.regs[rd] = ((self.regs[rs1] as i32) >> (shamt as i32)) as u32;
-                        return self.update_pc();
-                    }
-                    _ => Err(Exception::IllegalInstruction(inst)),
-                }
             }
             0x63 => {
                 // imm[12|10:5|4:1|11] = inst[31|30:25|11:8|7]
@@ -391,6 +456,85 @@ impl Cpu{
 
                 return Ok(self.pc.wrapping_add(imm));
             }
+            0x73 => {
+                let csr_addr = ((inst & 0xfff00000) >> 20) as usize;
+                match funct3{
+                    0x0 => {
+                        match (rs2,funct7){
+                            (0x2,0x8) => {
+                                //sret
+                                //mode <- MPP, SIE <- MPIE, MPP <- 0, MIE <- 0,pc <- SEPC
+                                let mut sstatus = self.csr.load(SSTATUS)?;
+                                let spp = (sstatus | MASK_MPP) >> 11;
+                                let spie = (sstatus | MASK_SPIE) >> 7;
+                                self.mode = spp;
+                                sstatus = (sstatus & !MASK_SIE) | (spie << 1);
+                                sstatus &= !MASK_SPP;
+                                sstatus &= !MASK_SPIE;
+                                let new_pc = self.csr.load(SEPC)? & !0b11;
+                                Ok(new_pc)
+                            }
+                            (0x2,0x18) => {
+                                //mret
+                                //mode <- MPP, MIE <- MPIE, MPP <- 0, MIE <- 0,pc <- MEPC
+                                let mut mstatus = self.csr.load(MSTATUS)?;
+                                let mpp = (mstatus | MASK_SPP) >> 8;
+                                let mpie = (mstatus | MASK_SPIE) >> 5;
+                                self.mode = mpp;
+                                mstatus = (mstatus & !MASK_SIE) | (mpie << 3);
+                                mstatus &= !MASK_MPP;
+                                mstatus &= !MASK_MPIE;
+                                let new_pc = self.csr.load(MEPC)? & !0b11;
+                                Ok(new_pc)
+                            }
+                            (_, 0x9) => {
+                                // sfence.vma
+                                // Do nothing.
+                                return self.update_pc();
+                            }
+                            _ => Err(Exception::IllegalInstruction(inst))
+                        }
+                    }
+                    0x1 => {
+                        //csrrw
+                        self.regs[rd] = self.csr.load(csr_addr)?;
+                        self.csr.store(csr_addr,self.regs[rs1]);
+                        return self.update_pc();
+                    }
+                    0x2 => {
+                        //csrrs
+                        self.regs[rd] = self.csr.load(csr_addr)?;
+                        self.csr.store(csr_addr,self.regs[rs1] | self.regs[rd]);
+                        return self.update_pc();
+                    }
+                    0x3 => {
+                        //csrrc
+                        self.regs[rd] = self.csr.load(csr_addr)?;
+                        self.csr.store(csr_addr,!self.regs[rs1] & self.regs[rd]);
+                        return self.update_pc();
+                    }
+                    0x5 => {
+                        //csrrwi
+                        self.regs[rd] = self.csr.load(csr_addr)?;
+                        self.csr.store(csr_addr,rs1 as u32);
+                        return self.update_pc();
+                    }
+                    0x6 => {
+                        //csrrsi
+                        self.regs[rd] = self.csr.load(csr_addr)?;
+                        self.csr.store(csr_addr,(rs1 as u32) | self.regs[rd]);
+                        return self.update_pc();
+                    }
+                    0x7 => {
+                        //csrrci
+                        self.regs[rd] = self.csr.load(csr_addr)?;
+                        self.csr.store(csr_addr,!(rs1 as u32) & self.regs[rd]);
+                        return self.update_pc();
+                    }
+                    _ => Err(Exception::IllegalInstruction(inst))
+                }
+            }
+
             _ => Err(Exception::IllegalInstruction(inst)),
         }
     }

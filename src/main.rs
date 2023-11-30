@@ -3,6 +3,7 @@ mod bus;
 mod dram;
 mod exceptions;
 mod param;
+mod csr;
 use cpu::Cpu;
 
 fn main() {

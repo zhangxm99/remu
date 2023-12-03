@@ -1,5 +1,6 @@
 use std::fmt;
 
+#[derive(Copy,Clone)]
 pub enum Exception {
     // Riscv Standard Exception
     InstructionAddrMisaligned(u32),
@@ -36,6 +37,56 @@ impl fmt::Display for Exception {
             InstructionPageFault(addr) => write!(f, "Instruction page fault {:#x}", addr),
             LoadPageFault(addr) => write!(f, "Load page fault {:#x}", addr),
             StoreAMOPageFault(addr) => write!(f, "Store or AMO page fault {:#x}", addr),
+        }
+    }
+}
+
+impl Exception{
+    pub fn value(self) -> u32 {
+        match self {
+            InstructionAddrMisaligned(addr) => addr,
+            InstructionAccessFault(addr) => addr,
+            IllegalInstruction(inst) => inst,
+            Breakpoint(pc) => pc,
+            LoadAccessMisaligned(addr) => addr,
+            LoadAccessFault(addr) => addr,
+            StoreAMOAddrMisaligned(addr) => addr,
+            StoreAMOAccessFault(addr) => addr,
+            EnvironmentCallFromUMode(pc) => pc,
+            EnvironmentCallFromSMode(pc) => pc,
+            EnvironmentCallFromMMode(pc) => pc,
+            InstructionPageFault(addr) => addr,
+            LoadPageFault(addr) => addr,
+            StoreAMOPageFault(addr) => addr,
+        }
+    }
+    pub fn code(&self) -> u32 {
+        match &self {
+            InstructionAddrMisaligned(_) => 0,
+            InstructionAccessFault(_) => 1,
+            IllegalInstruction(_) => 2,
+            Breakpoint(_) => 3,
+            LoadAccessMisaligned(_) => 4,
+            LoadAccessFault(_) => 5,
+            StoreAMOAddrMisaligned(_) => 6,
+            StoreAMOAccessFault(_) => 7,
+            EnvironmentCallFromUMode(_) => 8,
+            EnvironmentCallFromSMode(_) => 9,
+            EnvironmentCallFromMMode(_) => 11,
+            InstructionPageFault(_) => 12,
+            LoadPageFault(_) => 13,
+            StoreAMOPageFault(_) => 15,
+        }
+    }
+    pub fn is_fatal(&self) -> bool{
+        match &self{
+            IllegalInstruction(_)
+            |InstructionAccessFault(_)
+            |LoadAccessFault(_)
+            |StoreAMOAccessFault(_)
+            |StoreAMOAddrMisaligned(_)
+            => true,
+            _ => false
         }
     }
 }

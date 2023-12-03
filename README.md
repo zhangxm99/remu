@@ -1,16 +1,17 @@
 # REMU: A simple rv32g simulator writing in rust
 
-The final target is to run linux and port it to a weak microcontroller (just for fun).
+This program is based on Rare(https://github.com/siriusdemon/Rare.git) but changed ISA to rv32g. The final target is to run linux and port it to a weak microcontroller (just for fun).
 
- 
 
 development schedule:
 
 basic user level instruction (finished)
 
-CSR
+CSR(finished)
 
-privilege mode
+privilege mode(finished)
 
-exception
+exception(finished)
+
+PLIC & CLINT
 

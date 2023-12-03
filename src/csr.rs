@@ -108,5 +108,11 @@ impl Csr{
             _ => Err(Exception::IllegalInstruction(addr as u32))
         }
     }
+    pub fn is_medelegate(&self,cause:u32) -> bool{
+        (self.csrs[MEDELEG].wrapping_shr(cause) & 1) == 1
+    }
+    pub fn is_midelegate(&self,cause:u32) -> bool{
+        (self.csrs[MIDELEG].wrapping_shr(cause) & 1) == 1
+    }
 
 }

@@ -34,8 +34,30 @@ impl Cpu{
     }
     pub fn run(&mut self) -> Result<(),Exception>{
         loop{
-            let instr = self.fetch()?;
-            self.pc = self.execute(instr)?;
+            let instr = match self.fetch(){
+                Ok(instr) => instr,
+                Err(e) => {
+                    self.handle_exception(e);
+                    if e.is_fatal(){
+                        println!("{}",e);
+                        break Err(e);
+                    }
+                    continue;
+                }
+            };
+            match self.execute(instr){
+                Ok(new_pc) => {
+                    self.pc = new_pc;
+                },
+                Err(e) => {
+                    self.handle_exception(e);
+                    if e.is_fatal(){
+                        println!("{}",e);
+                        break Err(e);
+                    }
+                    continue;
+                }
+            }
             self.dump_registers();
         }
     }
@@ -62,6 +84,33 @@ impl Cpu{
     fn update_pc(&mut self) -> Result<u32,Exception>{
         Ok(self.pc+4)
     }
+    fn handle_exception(&mut self,e:Exception) {
+        let mode = self.mode;
+        //if exception happened in User or Supervisor level and allowed to be delegate
+        let (STATUS,TVEC,CAUSE,EPC,TVAL,MASK_PIE,pie_i,MASK_IE,ie_i,MASK_PP,pp_i) = 
+        if self.mode <= SUPERVISOR && self.csr.is_medelegate(e.code()){
+            self.mode = SUPERVISOR;
+            (SSTATUS,STVEC,SCAUSE,SEPC,STVAL,MASK_SPIE,5,MASK_SIE,1,MASK_SPP,8)
+        } else{
+            self.mode = MACHINE;
+            (MSTATUS,MTVEC,MCAUSE,MEPC,MTVAL,MASK_MPIE,7,MASK_MIE,3,MASK_MPP,11)
+        };
+        self.csr.store(CAUSE,e.code());
+        self.csr.store(EPC,self.pc);
+        if let Ok(tvec) = self.csr.load(TVEC){
+            self.pc = tvec;
+        }
+        self.csr.store(TVAL,e.value());
+        if let Ok(mut status) = self.csr.load(STATUS){
+            let ie = (status & MASK_IE) >> ie_i;
+            status = (status & !MASK_IE) | (ie_i << pie_i);
+            status &= !MASK_IE;
+            status = (status & !MASK_PP) | (mode << pp_i);
+            self.csr.store(STATUS,status);
+        };
+
+    }
+
     fn execute(&mut self,inst:u32) -> Result<u32,Exception>{
         let opcode = inst & 0x7f;
         let rd = ((inst & 0xf80) >> 7) as usize;

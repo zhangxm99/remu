@@ -1,6 +1,6 @@
 use std::fmt;
 
-#[derive(Copy,Clone)]
+#[derive(Copy,Clone,Debug)]
 pub enum Exception {
     // Riscv Standard Exception
     InstructionAddrMisaligned(u32),

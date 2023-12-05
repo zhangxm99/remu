@@ -2,6 +2,7 @@ use crate::bus::Bus;
 use crate::exceptions::*;
 use crate::param::*;
 use crate::csr::*;
+use crate::interrupt::*;
 
 pub const MACHINE:u32 = 3;
 pub const SUPERVISOR:u32 = 1;
@@ -58,6 +59,10 @@ impl Cpu{
                     continue;
                 }
             }
+            match self.check_pending_interrupt(){
+                Some(i) => self.handle_interrupt(i),
+                None => ()
+            }
             self.dump_registers();
         }
     }
@@ -88,7 +93,7 @@ impl Cpu{
         let mode = self.mode;
         //if exception happened in User or Supervisor level and allowed to be delegate
         let (STATUS,TVEC,CAUSE,EPC,TVAL,MASK_PIE,pie_i,MASK_IE,ie_i,MASK_PP,pp_i) = 
-        if self.mode <= SUPERVISOR && self.csr.is_medelegate(e.code()){
+        if mode <= SUPERVISOR && self.csr.is_medelegate(e.code()){
             self.mode = SUPERVISOR;
             (SSTATUS,STVEC,SCAUSE,SEPC,STVAL,MASK_SPIE,5,MASK_SIE,1,MASK_SPP,8)
         } else{
@@ -109,6 +114,77 @@ impl Cpu{
             self.csr.store(STATUS,status);
         };
 
+    }
+    fn handle_interrupt(&mut self,i:Interrupt){
+        let pc = self.pc;
+        let mode = self.mode;
+        let (status,tvec,cause_csr,epc,tval,MASK_PIE,pie_i,MASK_PP,pp_i,MASK_IE,ie_i) = 
+        if mode <= SUPERVISOR && self.csr.is_midelegate(i.code()){
+            self.mode = SUPERVISOR;
+            (SSTATUS,STVEC,SCAUSE,SEPC,STVAL,MASK_SPIE,5,MASK_SPP,8,MASK_SIE,1)
+        } else{
+            self.mode = MACHINE;
+            (MSTATUS,MTVEC,MCAUSE,MEPC,MTVAL,MASK_MPIE,7,MASK_MPP,11,MASK_MIE,3)
+        };
+        self.csr.store(epc,self.pc);
+        //according the mode
+        let vec = self.csr.load(tvec).unwrap();
+        let t_mode = vec & 0b11;
+        let t_addr = vec & !0b11;
+        self.pc = match mode{
+            0 => t_addr,
+            1 => t_addr + i.code() << 2,
+            _ => unreachable!()
+        };
+        self.csr.store(cause_csr,i.code());
+        self.csr.store(tval,0);
+        let mut new_status = self.csr.load(status).unwrap();
+        new_status = (new_status & !MASK_PIE) | (MASK_PIE | (((new_status & MASK_IE)>>ie_i) << pie_i));
+        new_status = (new_status & !MASK_PP) | (mode << pp_i);
+        new_status &= !MASK_IE;
+        self.csr.store(status,new_status);
+
+    }
+    fn check_pending_interrupt(&mut self) -> Option<Interrupt>{
+        let (mstatus,sstatus) = (self.csr.load(MSTATUS).unwrap(),self.csr.load(SSTATUS).unwrap());
+        if self.mode == MACHINE && (mstatus & MASK_MIE) == 0{
+            return None;
+        }
+        if self.mode == SUPERVISOR && (sstatus & MASK_SIE) == 0{
+            return None;
+        }
+        
+        // if self.bus.uart.is_interrupting(){
+
+        // }
+        let (mie,mip) = (self.csr.load(MIE).unwrap(),self.csr.load(MIP).unwrap());
+        let pending = mie & mip;
+
+        if (pending & MASK_MEIP) != 0 {
+            self.csr.store(MIP, self.csr.load(MIP).unwrap() & !MASK_MEIP);
+            return Some(Interrupt::MachineExternalInterrupt);
+        }
+        if (pending & MASK_MSIP) != 0 {
+            self.csr.store(MIP, self.csr.load(MIP).unwrap() & !MASK_MSIP);
+            return Some(Interrupt::MachineSoftwareInterrupt);
+        }
+        if (pending & MASK_MTIP) != 0 {
+            self.csr.store(MIP, self.csr.load(MIP).unwrap() & !MASK_MTIP);
+            return Some(Interrupt::MachineTimerInterrupt);
+        }
+        if (pending & MASK_SEIP) != 0 {
+            self.csr.store(MIP, self.csr.load(MIP).unwrap() & !MASK_SEIP);
+            return Some(Interrupt::SupervisorExternalInterrupt);
+        }
+        if (pending & MASK_SSIP) != 0 {
+            self.csr.store(MIP, self.csr.load(MIP).unwrap() & !MASK_SSIP);
+            return Some(Interrupt::SupervisorSoftwareInterrupt);
+        }
+        if (pending & MASK_STIP) != 0 {
+            self.csr.store(MIP, self.csr.load(MIP).unwrap() & !MASK_STIP);
+            return Some(Interrupt::SupervisorTimerInterrupt);
+        }
+        None
     }
 
     fn execute(&mut self,inst:u32) -> Result<u32,Exception>{
@@ -376,6 +452,60 @@ impl Cpu{
                         self.regs[rd] = self.regs[rs1].wrapping_mul(self.regs[rs2]);
                         return self.update_pc();
                     }
+                    (0x1, 0x01) => {
+                        //mulh
+                        let res:i64 = self.regs[rs1] as i32 as i64 * self.regs[rs2] as i32 as i64;
+                        self.regs[rd] = (res >> 32) as u32;
+                        return self.update_pc();
+                    }
+                    (0x2, 0x01) => {
+                        //mulhsu
+                        let res:i64 = self.regs[rs1] as i32 as i64 * self.regs[rs2] as u64 as i64;
+                        self.regs[rd] = (res >> 32) as u32;
+                        return self.update_pc();
+                    }
+                    (0x3, 0x01) => {
+                        //mulhu
+                        let res:u64 = self.regs[rs1] as u64 * self.regs[rs2] as u64;
+                        self.regs[rd] = (res >> 32) as u32;
+                        return self.update_pc();
+                    }
+                    (0x4, 0x01) => {
+                        //div
+                        if self.regs[rs2] == 0{
+                            self.regs[rd] = 0;
+                        } else{
+                            self.regs[rd] = (self.regs[rs1] as i32 / self.regs[rs2] as i32) as u32;
+                        }
+                        return self.update_pc();
+                    }
+                    (0x5, 0x01) => {
+                        //divu
+                        if self.regs[rs2] == 0{
+                            self.regs[rd] = 0;
+                        } else{
+                            self.regs[rd] = self.regs[rs1] / self.regs[rs2];
+                        }
+                        return self.update_pc();
+                    }
+                    (0x6, 0x01) => {
+                        //rem
+                        if self.regs[rs2] == 0{
+                            self.regs[rd] = 0;
+                        } else{
+                            self.regs[rd] = (self.regs[rs1] as i32 % self.regs[rs2] as i32) as u32;
+                        }
+                        return self.update_pc();
+                    }
+                    (0x7, 0x01) => {
+                        //remu
+                        if self.regs[rs2] == 0{
+                            self.regs[rd] = 0;
+                        } else{
+                            self.regs[rd] = self.regs[rs1] / self.regs[rs2];
+                        }
+                        return self.update_pc();
+                    }
                     (0x0, 0x20) => {
                         // sub
                         self.regs[rd] = self.regs[rs1].wrapping_sub(self.regs[rs2]);
@@ -510,6 +640,19 @@ impl Cpu{
                 match funct3{
                     0x0 => {
                         match (rs2,funct7){
+                            (0x0,0x0) => {
+                                //ecall
+                                match self.mode {
+                                    USER => Err(Exception::EnvironmentCallFromUMode(self.pc)),
+                                    SUPERVISOR => Err(Exception::EnvironmentCallFromSMode(self.pc)),
+                                    MACHINE => Err(Exception::EnvironmentCallFromMMode(self.pc)),
+                                    _ => unreachable!()
+                                }
+                            }
+                            (0x1,0x0) => {
+                                //ebreak
+                                return Err(Exception::Breakpoint(self.pc));
+                            }
                             (0x2,0x8) => {
                                 //sret
                                 //mode <- MPP, SIE <- MPIE, MPP <- 0, MIE <- 0,pc <- SEPC

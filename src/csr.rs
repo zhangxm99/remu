@@ -81,6 +81,10 @@ pub const MASK_MTIP: u32 = 1 << 7;
 pub const MASK_SEIP: u32 = 1 << 9;
 pub const MASK_MEIP: u32 = 1 << 11;
 
+// MMU related(SV32)
+pub const MASK_PPN: u32 = 0x3fffff;
+pub const MASK_MODE: u32 = 1 << 31;
+
 pub struct Csr{
     pub csrs: [u32;NUM_CSRS]
 }

@@ -13,5 +13,9 @@ privilege mode(finished)
 
 exception(finished)
 
+interrupt(finished)
+
+MMU(finished)
+
 PLIC & CLINT
 

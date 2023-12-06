@@ -8,12 +8,20 @@ pub const MACHINE:u32 = 3;
 pub const SUPERVISOR:u32 = 1;
 pub const USER:u32 = 0;
 
+enum AccessType{
+    Instruction,
+    Load,
+    Store
+}
+
 pub struct Cpu{
     pc: u32,
     regs: [u32;32],
     bus: Bus,
     csr: Csr,
-    mode: u32
+    mode: u32,
+    enable_paging: bool,
+    page_table: u32
 }
 
 impl Cpu{
@@ -25,7 +33,9 @@ impl Cpu{
             regs,
             bus:Bus::new(),
             csr:Csr::new(),
-            mode:MACHINE
+            mode:MACHINE,
+            enable_paging: false,
+            page_table: 0
         }
     }
     pub fn reset(&mut self){
@@ -77,13 +87,65 @@ impl Cpu{
         .for_each(|(x,i)| if (i+1) % 4 == 0 {println!("x{:<2}: {:<9x}",i,x)} else {print!("x{:<2}: {:<9x}",i,x)});
         println!("");
     }
+    fn updating_page(&mut self,csr_addr:usize) {
+        if csr_addr != SATP{return;}
+        let satp = self.csr.load(SATP).unwrap();
+        self.page_table = PAGE_SIZE*(satp & MASK_PPN);
+        self.enable_paging = ((satp & MASK_MODE) >> 31) == 1;
+
+    }
+    fn translate(&self,addr:u32,accesstype:AccessType) -> Result<u32,Exception>{
+        if !self.enable_paging{
+            Ok(addr)
+        } else{
+            let mut base = self.load(self.page_table*PAGE_SIZE,32)?;
+            let mut have_processed = 0;
+            loop{
+                let offset = (addr & (0xffc00000_u32 >> have_processed)) >> (22 - have_processed);
+                let pte = self.load(base + offset*PTE_SIZE,32)?;
+                let (p_v,p_r,p_w,p_x) = (pte & 1,(pte&0b10)>>1,(pte&0b100)>>2,(pte&0b1000)>>3);
+                if p_v == 0 || (p_r == 0 && p_w == 1) {
+                    match accesstype {
+                        AccessType::Instruction => return Err(Exception::InstructionPageFault(addr)),
+                        AccessType::Load => return Err(Exception::LoadPageFault(addr)),
+                        AccessType::Store => return Err(Exception::StoreAMOPageFault(addr)),
+                    }
+                } else{
+                    //leaf page
+                    if p_r == 1 || p_x == 1{
+                        //privilege check
+                        // if
+                        // check if it's a superpage and if so ,check if aligned correctly
+                        if have_processed == 0 && (addr & (0xffc00000_u32 >> 10) != 0){
+                            match accesstype {
+                                AccessType::Instruction => return Err(Exception::InstructionPageFault(addr)),
+                                AccessType::Load => return Err(Exception::LoadPageFault(addr)),
+                                AccessType::Store => return Err(Exception::StoreAMOPageFault(addr)),
+                            }
+                        }
+                        let MASK_PA = (0xffc00000_u32 as i32 >> have_processed) as u32;
+                        let offset = addr | !MASK_PA;
+                        let pa = (pte & MASK_PA) | offset;
+                        return Ok(pa);
+                    } else{
+                        have_processed += 10;
+                        base = (pte & 0xfffff000) >> 12;
+                    }
+                }
+            }
+
+        }
+    }
     fn fetch(&self) -> Result<u32,Exception>{
-        self.bus.load(self.pc,32)
+        let addr = self.translate(self.pc,AccessType::Instruction)?;
+        self.bus.load(addr,32)
     }
     fn load(&self,addr:u32,size:u32) -> Result<u32,Exception>{
+        let addr = self.translate(addr,AccessType::Load)?;
         self.bus.load(addr,size)
     }
     fn store(&mut self,addr:u32,size:u32,value:u32) -> Result<(),Exception>{
+        let addr = self.translate(self.pc,AccessType::Store)?;
         self.bus.store(addr,size,value)
     }
     fn update_pc(&mut self) -> Result<u32,Exception>{
@@ -691,36 +753,42 @@ impl Cpu{
                         //csrrw
                         self.regs[rd] = self.csr.load(csr_addr)?;
                         self.csr.store(csr_addr,self.regs[rs1]);
+                        self.updating_page(csr_addr);
                         return self.update_pc();
                     }
                     0x2 => {
                         //csrrs
                         self.regs[rd] = self.csr.load(csr_addr)?;
                         self.csr.store(csr_addr,self.regs[rs1] | self.regs[rd]);
+                        self.updating_page(csr_addr);
                         return self.update_pc();
                     }
                     0x3 => {
                         //csrrc
                         self.regs[rd] = self.csr.load(csr_addr)?;
                         self.csr.store(csr_addr,!self.regs[rs1] & self.regs[rd]);
+                        self.updating_page(csr_addr);
                         return self.update_pc();
                     }
                     0x5 => {
                         //csrrwi
                         self.regs[rd] = self.csr.load(csr_addr)?;
                         self.csr.store(csr_addr,rs1 as u32);
+                        self.updating_page(csr_addr);
                         return self.update_pc();
                     }
                     0x6 => {
                         //csrrsi
                         self.regs[rd] = self.csr.load(csr_addr)?;
                         self.csr.store(csr_addr,(rs1 as u32) | self.regs[rd]);
+                        self.updating_page(csr_addr);
                         return self.update_pc();
                     }
                     0x7 => {
                         //csrrci
                         self.regs[rd] = self.csr.load(csr_addr)?;
                         self.csr.store(csr_addr,!(rs1 as u32) & self.regs[rd]);
+                        self.updating_page(csr_addr);
                         return self.update_pc();
                     }
                     _ => Err(Exception::IllegalInstruction(inst))

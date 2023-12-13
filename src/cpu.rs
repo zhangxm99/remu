@@ -17,6 +17,7 @@ enum AccessType{
 pub struct Cpu{
     pc: u32,
     regs: [u32;32],
+    f_regs: [f32;32],
     bus: Bus,
     csr: Csr,
     mode: u32,
@@ -27,10 +28,12 @@ pub struct Cpu{
 impl Cpu{
     pub fn new() -> Self{
         let mut regs = [0;32];
+        let mut f_regs = [0.0;32];
         regs[2] = DRAM_END;
         Self{
             pc:DRAM_BASE,
             regs,
+            f_regs,
             bus:Bus::new(),
             csr:Csr::new(),
             mode:MACHINE,
@@ -85,6 +88,11 @@ impl Cpu{
         .iter()
         .zip(0..)
         .for_each(|(x,i)| if (i+1) % 4 == 0 {println!("x{:<2}: {:<9x}",i,x)} else {print!("x{:<2}: {:<9x}",i,x)});
+
+        self.f_regs
+        .iter()
+        .zip(0..)
+        .for_each(|(x,i)| if (i+1) % 4 == 0 {println!("f{:<2}: {:<9}",i,x)} else {print!("f{:<2}: {:<9}",i,x)});
         println!("");
     }
     fn updating_page(&mut self,csr_addr:usize) {
@@ -620,6 +628,153 @@ impl Cpu{
                 // lui
                 self.regs[rd] = (inst & 0xfffff000) as i32 as u32;
                 return self.update_pc();
+            }
+            0x43 => {
+                // fmadd.s
+                let rs3 = ((funct7 & 0x7c) >> 2) as usize;
+                self.f_regs[rd] = self.f_regs[rs1] * self.f_regs[rs2] + self.f_regs[rs3];
+                return self.update_pc();
+
+            }
+            0x47 => {
+                //fmsub.s
+                let rs3 = ((funct7 & 0x7c) >> 2) as usize;
+                self.f_regs[rd] = self.f_regs[rs1] * self.f_regs[rs2] - self.f_regs[rs3];
+                return self.update_pc();
+            }
+            0x4b => {
+                //fnmsub.s
+                let rs3 = ((funct7 & 0x7c) >> 2) as usize;
+                self.f_regs[rd] = -self.f_regs[rs1] * self.f_regs[rs2] + self.f_regs[rs3];
+                return self.update_pc();
+            }
+            0x4f => {
+                //fnmadd.s
+                let rs3 = ((funct7 & 0x7c) >> 2) as usize;
+                self.f_regs[rd] = -self.f_regs[rs1] * self.f_regs[rs2] - self.f_regs[rs3];
+                return self.update_pc();
+            }
+            0x53 => {
+                match (funct7,funct3) {
+                    (0x00,_) => {
+                        //fadd.s
+                        self.f_regs[rd] = self.f_regs[rs1] + self.f_regs[rs2];
+                        return self.update_pc();
+                    }
+                    (0x04,_) => {
+                        //fsub.s
+                        self.f_regs[rd] = self.f_regs[rs1] - self.f_regs[rs2];
+                        return self.update_pc();
+                    }
+                    (0x08,_) => {
+                        //fmul.s
+                        self.f_regs[rd] = self.f_regs[rs1] * self.f_regs[rs2];
+                        return self.update_pc();
+                    }
+                    (0x0c,_) => {
+                        //fdiv.s
+                        self.f_regs[rd] = self.f_regs[rs1] / self.f_regs[rs2];
+                        return self.update_pc();
+                    }
+                    (0x2c,_) => {
+                        //fsqrt.s
+                        self.f_regs[rd] = f64::sqrt(self.f_regs[rs1] as f64) as f32;
+                        return self.update_pc();
+                    }
+                    (0x10,0x00) => {
+                        //fsgnj.s
+                        self.f_regs[rd] = if self.f_regs[rs2] < 0.0 { -1.0} else {1.0} * self.f_regs[rs1].abs();
+                        return self.update_pc();
+                    }
+                    (0x10,0x01) => {
+                        //fsgnjn.s
+                        self.f_regs[rd] = if self.f_regs[rs2] < 0.0 { 1.0} else {-1.0} * self.f_regs[rs1].abs();
+                        return self.update_pc();
+                    }
+                    (0x10,0x02) => {
+                        //fsgnjx.s
+                        let sign = |x| if x >= 0.0{1.0} else{-1.0};
+                        self.f_regs[rd] = sign(self.f_regs[rs1])*sign(self.f_regs[rs2]) * self.f_regs[rs1].abs();
+                        return self.update_pc();
+                    }
+                    (0x14,0x00) => {
+                        //fmin.s
+                        self.f_regs[rd] = if self.f_regs[rs1] < self.f_regs[rs2]{self.f_regs[rs1]}else{self.f_regs[rs2]};
+                        return self.update_pc();
+                    }
+                    (0x14,0x01) => {
+                        //fmax.s
+                        self.f_regs[rd] = if self.f_regs[rs1] < self.f_regs[rs2]{self.f_regs[rs2]}else{self.f_regs[rs1]};
+                        return self.update_pc();
+                    }
+                    (0x60,_) => {
+                        match rs2{
+                            0x0 => {
+                                //fcvt.w.s
+                                self.regs[rd] = self.f_regs[rs1] as i32 as u32;
+                                return self.update_pc();
+                            }
+                            0x1 => {
+                                //fcvt.wu.s
+                                self.regs[rd] = self.f_regs[rs1] as u32;
+                                return self.update_pc();
+                            }
+                            _ => return Err(Exception::IllegalInstruction(inst))
+                        }
+                    }
+                    (0x70,0x0) => {
+                        //fmv.x.w
+                        self.regs[rd] = f32::to_bits(self.f_regs[rs1]) ;
+                        return self.update_pc();
+                    }
+                    (0x50,_) => {
+                        match funct3{
+                            0x2 => {
+                                //feq.s
+                                self.regs[rd] = (self.f_regs[rs1] == self.f_regs[rs1]) as u32;
+                                return self.update_pc();
+                            }
+                            0x1 => {
+                                //flt
+                                self.regs[rd] = (self.f_regs[rs1] < self.f_regs[rs1]) as u32;
+                                return self.update_pc();
+                            }
+                            0x0 => {
+                                //fle
+                                self.regs[rd] = (self.f_regs[rs1] <= self.f_regs[rs1]) as u32;
+                                return self.update_pc();
+                            }
+                            _ => return Err(Exception::IllegalInstruction(inst))
+                        }
+                        
+
+                    }
+                    (0x70,_) => {
+                        //fclass dont want to implemment
+                        return Err(Exception::IllegalInstruction(inst));
+                    }
+                    (0x68, _) => {
+                        match rs2{
+                            0x0 => {
+                                //fcvt.s.w
+                                self.f_regs[rd] = self.regs[rs1] as i32 as f32;
+                                return self.update_pc();
+                            }
+                            0x1 => {
+                                //fcvt.s.wu
+                                self.f_regs[rd] = self.regs[rs1] as f32;
+                                return self.update_pc();
+                            }
+                            _ => return Err(Exception::IllegalInstruction(inst))
+                        }
+                    }
+                    (0x78,0x0) => {
+                        //fmv.w.x
+                        self.f_regs[rd] = f32::from_bits(self.regs[rs1]);
+                        return self.update_pc();
+                    }
+                    _ => return Err(Exception::IllegalInstruction(inst))
+                }
             }
             0x63 => {
                 // imm[12|10:5|4:1|11] = inst[31|30:25|11:8|7]

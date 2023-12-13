@@ -5,6 +5,7 @@ mod exceptions;
 mod param;
 mod csr;
 mod interrupt;
+mod uart;
 use cpu::Cpu;
 
 fn main() {
